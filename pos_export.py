@@ -272,7 +272,7 @@ class POSExport:
             with open(arquivo_pos, "w", encoding="utf-8") as f:
                 f.write("\n".join(linhas_saida))
 
-            print(f"Arquivo gerado: {arquivo_pos}")
+        
 
     def getGJPath(self, path):
         name, format = os.path.splitext(path)
