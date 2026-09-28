@@ -25,10 +25,15 @@ from qgis.PyQt.QtCore import QLocale, QTranslator, QCoreApplication
 from qgis.core import QgsSettings
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction
+from qgis.core import QgsProject, QgsMapLayerType, QgsVectorLayer
+from qgis.PyQt.QtWidgets import QFileDialog
+
 
 # Import the code for the dialog
 from .pos_export_dialog import POSExportDialog
 import os.path
+import json
+import processing
 
 
 class POSExport:
@@ -178,22 +183,200 @@ class POSExport:
                 action)
             self.iface.removeToolBarIcon(action)
 
+    def selecionar_arquivo(self):
+
+        arquivo, _ = QFileDialog.getSaveFileName(
+            self.dlg,
+            "Salvar resultado",
+            "",
+            "POSITION (*.pos)"
+        )
+
+        if arquivo:
+            self.dlg.lineEditArquivo.setText(arquivo)
+
+    def GerarPos(self, arquivo_json, arquivo_pos):
+        # Carrega o JSON
+        with open(arquivo_json, "r", encoding="utf-8") as f:
+            dados = json.load(f)
+
+        # Se o JSON for GeoJSON FeatureCollection
+        if "features" in dados:
+            features = dados["features"]
+        else:
+            # Caso seja lista simples de features
+            features = dados
+
+        linhas_saida = []
+        estaca = 0
+
+        first_normalize = 0.2
+        sec_normalize = 0.1
+
+        last = len(features)-1
+
+        z_array = []
+
+        for feature in features:
+            props = feature["properties"]
+            coords = feature["geometry"]["coordinates"]
+
+            z_array.append(coords[2])
+
+
+        for i in range(len(features)):
+            props = features[i]["properties"]
+            coords = features[i]["geometry"]["coordinates"]
+
+            x = coords[0]
+            y = coords[1]
+            #z = coords[2]
+            
+
+            if(i == 0 or i == 1 or i == len(features)-2 or i == len(features)-1):
+                z = coords[2]
+            else:
+                zin = coords[2]
+                #z = zin
+                difffor = ((zin - z_array[i+1])*first_normalize) + ((zin - z_array[i+2])*sec_normalize)
+                diffback =  ((zin - z_array[i-1])*first_normalize) + ((zin - z_array[i-2])*sec_normalize)
+                diff = 0
+
+                diff = (difffor*-1) + (diffback*-1)
+                
+                z = zin + diff
+
+                coords[2] = z
+
+            
+            # Campo "1"
+            valor = props.get("1", 0)
+
+            # Converte ponto para vírgula
+            x_str = str(x).replace(".", ",")
+            y_str = str(y).replace(".", ",")
+            z_str = f"{(z):.3f}".replace(".", ",")
+
+            # Exemplo: 569 -> 569,0
+            valor_str = f"{float(valor):.1f}".replace(".", ",")
+
+            linha = f"{x_str};{y_str};{z_str};{estaca};0;0;0;4;4;;"
+            linhas_saida.append(linha)
+
+            estaca = estaca + 1
+
+            # Salva arquivo .pos
+            with open(arquivo_json, "w", encoding="utf-8") as f:
+                json.dump(dados, f, ensure_ascii=False, indent=4)
+
+            with open(arquivo_pos, "w", encoding="utf-8") as f:
+                f.write("\n".join(linhas_saida))
+
+            print(f"Arquivo gerado: {arquivo_pos}")
+
+    def getGJPath(self, path):
+        name, format = os.path.splitext(path)
+        return name + ".geojson"
+
 
     def run(self):
-        """Run method that performs all the real work"""
-
-        # Create the dialog with elements (after translation) and keep reference
-        # Only create GUI ONCE in callback, so that it will only load when the plugin is started
+      
         if self.first_start == True:
             self.first_start = False
             self.dlg = POSExportDialog()
 
-        # show the dialog
+            self.dlg.pushButtonArquivo.clicked.connect(
+                self.selecionar_arquivo
+            )
+
+
+        self.dlg.comboBoxCamada.clear()
+
+        self.dlg.comboBoxDEM.clear()
+        
+        for layer in QgsProject.instance().mapLayers().values():
+        
+            if layer.type() == QgsMapLayerType.Vector:
+                if layer.geometryType() == 1:  # linha
+                    self.dlg.comboBoxCamada.addItem(
+                        layer.name(),
+                        layer.id()
+                    )
+
+            if layer.type() == QgsMapLayerType.Raster:
+                
+                self.dlg.comboBoxDEM.addItem(
+                        layer.name(),
+                        layer.id()
+                )
+
+          
         self.dlg.show()
-        # Run the dialog event loop
+            
         result = self.dlg.exec_()
-        # See if OK was pressed
+
+
+       
         if result:
-            # Do something useful here - delete the line containing pass and
-            # substitute with your code.
-            pass
+            
+            print("Iniciando")
+
+            layer_id = self.dlg.comboBoxCamada.currentData()
+
+            layer_id_dem = self.dlg.comboBoxDEM.currentData()
+
+            camada = QgsProject.instance().mapLayer(layer_id)
+
+            raster = QgsProject.instance().mapLayer(layer_id_dem)
+
+            # Pega os valores da interface
+            distancia = self.dlg.doubleSpinBoxDistancia.value()
+
+            arquivo = self.dlg.lineEditArquivo.text()
+
+            arquivo_geojson = self.getGJPath(arquivo)
+
+
+            resultado = processing.run(
+                "native:pointsalonglines",
+                {
+                    'INPUT':camada,
+                    'DISTANCE':distancia,
+                    'START_OFFSET':0,
+                    'END_OFFSET':0,
+                    'OUTPUT': 'TEMPORARY_OUTPUT'
+                }
+            )
+
+            camada_temp = resultado['OUTPUT']
+
+            final = processing.run(
+                "native:setzfromraster",
+                {
+                     'INPUT':camada_temp,
+                     'RASTER':raster,
+                     'BAND':1,
+                     'NODATA':None,
+                     'SCALE':1,
+                     'OFFSET':0,
+                     'OUTPUT': arquivo_geojson
+                }
+            )
+
+            caminho_geojson = final['OUTPUT']
+
+            self.GerarPos(caminho_geojson, arquivo)
+
+            QgsProject.instance().addMapLayer(
+                QgsVectorLayer(
+                    final['OUTPUT'],
+                    "Pontos x-y-z GEOJSON",
+                    "ogr"
+                )
+            )
+
+
+            self.iface.messageBar().pushInfo(
+                        ".POS Export",
+                        "Arquivo .pos exportado!"
+                    )
