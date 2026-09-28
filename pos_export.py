@@ -27,6 +27,7 @@ from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction
 from qgis.core import QgsProject, QgsMapLayerType, QgsVectorLayer
 from qgis.PyQt.QtWidgets import QFileDialog
+from qgis.core import QgsProcessingFeatureSourceDefinition
 
 
 # Import the code for the dialog
@@ -293,6 +294,9 @@ class POSExport:
         self.dlg.comboBoxCamada.clear()
 
         self.dlg.comboBoxDEM.clear()
+
+        self.dlg.comboBoxFeicao.clear()
+
         
         for layer in QgsProject.instance().mapLayers().values():
         
@@ -310,6 +314,21 @@ class POSExport:
                         layer.id()
                 )
 
+        layer_id = self.dlg.comboBoxCamada.currentData()
+
+        camada = QgsProject.instance().mapLayer(layer_id)
+
+        indice_nome = camada.fields().indexOf("Name")
+
+        for feicao in camada.getFeatures():
+                    nome = feicao[indice_nome]
+        
+                    if nome is not None:
+                        self.dlg.comboBoxFeicao.addItem(
+                            str(nome),
+                            feicao.id()
+                        )
+
           
         self.dlg.show()
             
@@ -321,11 +340,11 @@ class POSExport:
             
             print("Iniciando")
 
-            layer_id = self.dlg.comboBoxCamada.currentData()
+            
 
             layer_id_dem = self.dlg.comboBoxDEM.currentData()
 
-            camada = QgsProject.instance().mapLayer(layer_id)
+            
 
             raster = QgsProject.instance().mapLayer(layer_id_dem)
 
@@ -336,11 +355,19 @@ class POSExport:
 
             arquivo_geojson = self.getGJPath(arquivo)
 
+            fid = self.dlg.comboBoxFeicao.currentData()
+
+            camada.selectByIds([fid])
+
+            name = self.dlg.comboBoxFeicao.currentText()
 
             resultado = processing.run(
                 "native:pointsalonglines",
                 {
-                    'INPUT':camada,
+                    'INPUT': QgsProcessingFeatureSourceDefinition(
+                        camada.id(),
+                        selectedFeaturesOnly=True
+                    ),
                     'DISTANCE':distancia,
                     'START_OFFSET':0,
                     'END_OFFSET':0,
@@ -370,7 +397,7 @@ class POSExport:
             QgsProject.instance().addMapLayer(
                 QgsVectorLayer(
                     final['OUTPUT'],
-                    "Pontos x-y-z GEOJSON",
+                    "Pontos " + name,
                     "ogr"
                 )
             )
@@ -380,3 +407,5 @@ class POSExport:
                         ".POS Export",
                         "Arquivo .pos exportado!"
                     )
+
+            camada.removeSelection()
